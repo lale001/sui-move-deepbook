@@ -1,252 +1,235 @@
-#[allow(unused_use)]
-module car_booking::car_booking {
-
-    // Imports
+module car_booking::main {
+    use std::string::{String};
     use sui::transfer;
-    use sui::sui::SUI;
-    use std::string::{Self, String};
-    use sui::coin::{Self, Coin};
-    use sui::clock::{Self, Clock};
     use sui::object::{Self, UID, ID};
+    use sui::url::{Self, Url};
+    use sui::coin::{Self, Coin};
     use sui::balance::{Self, Balance};
-    use sui::tx_context::{Self, TxContext};
-    use sui::table::{Self, Table};
+    use sui::sui::SUI;
+    use sui::object_table::{Self, ObjectTable};
+    use sui::dynamic_field as df;
+    use sui::dynamic_object_field as dof;
+    use sui::event;
+    use sui::tx_context::{Self, TxContext, sender};
 
-    // Errors
-    const EInsufficientFunds: u64 = 1;
-    const EInvalidCoin: u64 = 2;
-    const ENotCustomer: u64 = 3;
-    const EInvalidCar: u64 = 4;
-    const ENotCompany: u64 = 5;
-    const EInvalidCarBooking: u64 = 6;
+    const ERROR_NOT_THE_OWNER: u64 = 0;
+    const ERROR_INSUFFICIENT_FUNDS: u64 = 1;
 
-    // CarBooking Company 
-
-    struct CarCompany has key {
+    struct Car has key, store {
         id: UID,
-        name: String,
-        car_prices: Table<ID, u64>, // car_id -> price
+        title: String,
+        artist: address,
+        year: u64,
+        price: u64,
+        img_url: Url,
+        description: String,
+        for_sale: bool,
+    }
+
+    struct CarCompany has key, store {
+        id: UID,
+        owner: address,
         balance: Balance<SUI>,
-        memos: Table<ID, CarMemo>, // car_id -> memo
-        company: address
+        counter: u64,
+        Cars: ObjectTable<u64, Car>,
     }
 
-    // Customer
-
-    struct Customer has key {
+    struct CarCompanyCap has key, store {
         id: UID,
-        name: String,
-        customer: address,
-        company_id: ID,
-        balance: Balance<SUI>,
+        for: ID
     }
 
-    // CarMemo
+    struct Listing has store, copy, drop { id: ID, is_exclusive: bool }
 
-    struct CarMemo has key, store {
-        id: UID,
-        car_id: ID,
-        rental_fee: u64,
-        company: address 
+    struct Item has store, copy, drop { id: ID }
+
+    struct CarCreated has copy, drop {
+        id: ID,
+        artist: address,
+        title: String,
+        year: u64,
+        description: String,
     }
 
-    // Car
-
-    struct Car has key {
-        id: UID,
-        name: String,
-        car_type : String,
-        company: address,
-        available: bool,
+    struct CarUpdated has copy, drop {
+        title: String,
+        year: u64,
+        description: String,
+        for_sale: bool,
+        price: u64,
     }
 
-    // Record of Car Booking
-
-    struct BookingRecord has key, store {
-        id: UID,
-        customer_id: ID,
-        car_id: ID,
-        customer: address,
-        company: address,
-        paid_fee: u64,
-        rental_fee: u64,
-        booking_time: u64
+    struct CarDeleted has copy, drop {
+        art_id: ID,
+        title: String,
+        artist: address,
     }
 
-    // Create a new CarCompany object 
-
-    public fun create_company(ctx:&mut TxContext, name: String) {
-        let company = CarCompany {
+    public fun new(ctx: &mut TxContext) : CarCompanyCap {
+        let id_ = object::new(ctx);
+        let inner_ = object::uid_to_inner(&id_);
+        transfer::share_object(
+            CarCompany {
+                id: id_,
+                owner: sender(ctx),
+                balance: balance::zero(),
+                counter: 0,
+                Cars: object_table::new(ctx),
+            }
+        );
+        CarCompanyCap {
             id: object::new(ctx),
-            name: name,
-            car_prices: table::new<ID, u64>(ctx),
-            balance: balance::zero<SUI>(),
-            memos: table::new<ID, CarMemo>(ctx),
-            company: tx_context::sender(ctx)
-        };
-
-        transfer::share_object(company);
-    }
-
-    // Create a new Customer object
-
-    public fun create_customer(ctx:&mut TxContext, name: String, company_address: address) {
-        let company_id_: ID = object::id_from_address(company_address);
-        let customer = Customer {
-            id: object::new(ctx),
-            name: name,
-            customer: tx_context::sender(ctx),
-            company_id: company_id_,
-            balance: balance::zero<SUI>(),
-        };
-
-        transfer::share_object(customer);
-    }
-
-    // create a memo for a car
-
-    public fun create_car_memo(
-        company: &mut CarCompany,
-        rental_fee: u64,
-        car_name: String,
-        car_type: String,
-        ctx: &mut TxContext
-    ): Car {
-        assert!(company.company == tx_context::sender(ctx), ENotCompany);
-        let car = Car {
-            id: object::new(ctx),
-            name: car_name,
-            car_type: car_type,
-            company: company.company,
-            available: true
-        };
-        let memo = CarMemo {
-            id: object::new(ctx),
-            car_id: object::uid_to_inner(&car.id),
-            rental_fee: rental_fee,
-            company: company.company
-        };
-
-        table::add<ID, CarMemo>(&mut company.memos, object::uid_to_inner(&car.id), memo);
-
-        car
-    }
-
-    // Book a car
-
-    public fun book_car(
-        company: &mut CarCompany,
-        customer: &mut Customer,
-        car: &mut Car,
-        car_memo_id: ID,
-        clock: &Clock,
-        ctx: &mut TxContext
-    ): Coin<SUI> {
-        assert!(company.company == tx_context::sender(ctx), ENotCompany);
-        assert!(customer.company_id == object::id_from_address(company.company), ENotCustomer);
-        assert!(table::contains<ID, CarMemo>(&company.memos, car_memo_id), EInvalidCarBooking);
-        assert!(car.company == company.company, EInvalidCar);
-        assert!(car.available, EInvalidCar);
-        let car_id = &car.id;
-        let memo = table::borrow<ID, CarMemo>(&company.memos, car_memo_id);
-
-        let customer_id = object::uid_to_inner(&customer.id);
-        
-        let rental_fee = memo.rental_fee;
-        let booking_time = clock::timestamp_ms(clock);
-        let booking_record = BookingRecord {
-            id: object::new(ctx),
-            customer_id:customer_id ,
-            car_id: object::uid_to_inner(car_id),
-            customer: customer.customer,
-            company: company.company,
-            paid_fee: rental_fee,
-            rental_fee: rental_fee,
-            booking_time: booking_time
-        };
-
-        transfer::public_freeze_object(booking_record);
-        // deduct the rental fee from the customer balance and add it to the company balance
-        assert!(rental_fee <= balance::value(&customer.balance), EInsufficientFunds);
-        let amount_to_pay = coin::take(&mut customer.balance, rental_fee, ctx);
-        let same_amount_to_pay = coin::take(&mut customer.balance, rental_fee, ctx);
-        assert!(coin::value(&amount_to_pay) > 0, EInvalidCoin);
-        assert!(coin::value(&same_amount_to_pay) > 0, EInvalidCoin);
-
-        transfer::public_transfer(amount_to_pay, company.company);
-
-        same_amount_to_pay
-    }
-
-    // Customer adding funds to their account
-
-    public fun top_up_customer_balance(
-        customer: &mut Customer,
-        amount: Coin<SUI>,
-        ctx: &mut TxContext
-    ){
-        assert!(customer.customer == tx_context::sender(ctx), ENotCustomer);
-        balance::join(&mut customer.balance, coin::into_balance(amount));
-    }
-
-    // add the Payment fee to the company balance
-
-    public fun top_up_company_balance(
-        company: &mut CarCompany,
-        customer: &mut Customer,
-        car: &mut Car,
-        car_memo_id: ID,
-        clock: &Clock,
-        ctx: &mut TxContext
-    ){
-        // Can only be called by the customer
-        assert!(customer.customer == tx_context::sender(ctx), ENotCustomer);
-        let (amount_to_pay) = book_car(company, customer, car, car_memo_id, clock, ctx);
-        balance::join(&mut company.balance, coin::into_balance(amount_to_pay));
-    }
-
-    // Get the balance of the company
-
-    public fun get_company_balance(company: &CarCompany) : &Balance<SUI> {
-        &company.balance
-    }
-
-    // Company can withdraw the balance
-
-    public fun withdraw_funds(
-        company: &mut CarCompany,
-        amount: u64,
-        ctx: &mut TxContext
-    ){
-        assert!(company.company == tx_context::sender(ctx), ENotCompany);
-        assert!(amount <= balance::value(&company.balance), EInsufficientFunds);
-        let amount_to_withdraw = coin::take(&mut company.balance, amount, ctx);
-        transfer::public_transfer(amount_to_withdraw, company.company);
+            for: inner_
+        }
     }
     
-    // Transfer the Ownership of the car to the customer
+    // Function to create Car
+    public fun mint(
+        title: String,
+        img_url: vector<u8>,
+        year: u64,
+        price: u64,
+        description: String,
+        ctx: &mut TxContext,
+    ) : Car {
 
-    public entry fun transfer_car_ownership(
-        customer: &Customer,
-        car: Car,
-    ){
-        transfer::transfer(car, customer.customer);
+        let id = object::new(ctx);
+        event::emit(
+            CarCreated {
+                id: object::uid_to_inner(&id),
+                title: title,
+                artist:tx_context::sender(ctx),
+                year: year,
+                description: description,
+            }
+        );
+
+        Car {
+            id: id,
+            title: title,
+            artist: tx_context::sender(ctx),
+            year: year,
+            img_url: url::new_unsafe_from_bytes(img_url),
+            description: description,
+            for_sale: true,
+            price: price,
+        }
     }
 
-
-    // Customer Returns the car ownership
-    // Set the car as available again
-
-    public fun return_car(
-        company: &mut CarCompany,
-        customer: &mut Customer,
-        car: &mut Car,
-        ctx: &mut TxContext
+    // Function to add Car to CarCompany
+    public entry fun list<T: key + store>(
+        self: &mut CarCompany,
+        cap: &CarCompanyCap,
+        item: T,
+        price: u64,
     ) {
-        assert!(company.company == tx_context::sender(ctx), ENotCompany);
-        assert!(customer.company_id == object::id_from_address(company.company), ENotCustomer);
-        assert!(car.company == company.company, EInvalidCar);
+        assert!(object::id(self) == cap.for, ERROR_NOT_THE_OWNER);
+        let id = object::id(&item);
+        place_internal(self, item);
+        df::add(&mut self.id, Listing { id, is_exclusive: false }, price);
+    }
 
-        car.available = true;
-    }  
+    public fun delist<T: key + store>(
+        self: &mut CarCompany, cap: &CarCompanyCap, id: ID
+    ) : T {
+        assert!(object::id(self) == cap.for, ERROR_NOT_THE_OWNER);
+        self.counter = self.counter - 1;
+        df::remove_if_exists<Listing, u64>(&mut self.id, Listing { id, is_exclusive: false });
+        dof::remove(&mut self.id, Item { id })    
+    }
+
+    public fun purchase<T: key + store>(
+        self: &mut CarCompany, id: ID, payment: Coin<SUI>
+    ): T {
+        let price = df::remove<Listing, u64>(&mut self.id, Listing { id, is_exclusive: false });
+        let inner = dof::remove<Item, T>(&mut self.id, Item { id });
+
+        self.counter = self.counter - 1;
+        assert!(price == coin::value(&payment), ERROR_INSUFFICIENT_FUNDS);
+        coin::put(&mut self.balance, payment);
+        inner
+    }
+    
+    // Function to Update Car Properties
+    public entry fun update(
+        car: &mut Car,
+        title: String,
+        year: u64,
+        description: String,
+        for_sale: bool,
+        price: u64,
+    ) {
+        car.title = title;
+        car.year = year;
+        car.description = description;
+        car.for_sale = for_sale;
+        car.price = price;
+
+        event::emit(
+            CarUpdated {
+                title: car.title,
+                year: car.year,
+                description: car.description,
+                for_sale: car.for_sale,
+                price: car.price,
+            }
+        );
+    }
+
+    public fun withdraw(
+        self: &mut CarCompany, cap: &CarCompanyCap, amount: u64, ctx: &mut TxContext
+    ): Coin<SUI> {
+        assert!(object::id(self) == cap.for, ERROR_NOT_THE_OWNER);
+        coin::take(&mut self.balance, amount, ctx)
+    }
+    
+    // Function to get the artist of an Car
+    public fun get_owner(self: &CarCompany) : address {
+        self.owner
+    }
+
+    // Function to fetch the Car Information
+    public fun get_car_info(self: &CarCompany,id:u64) : (
+        String,
+        address,
+        u64,
+        u64,
+        Url,
+        String,
+        bool
+    ) {
+        let car = object_table::borrow(&self.Cars, id);
+        (
+            car.title,
+            car.artist,
+            car.year,
+            car.price,
+            car.img_url,
+            car.description,
+            car.for_sale,
+        )
+    }
+
+    // Function to delete an Car
+    public entry fun delete_Car(
+        car: Car,
+        ctx: &mut TxContext,
+    ) {
+        assert!(tx_context::sender(ctx) == car.artist, ERROR_NOT_THE_OWNER);
+        event::emit(
+            CarDeleted {
+                art_id: object::uid_to_inner(&car.id),
+                title: car.title,
+                artist: car.artist,
+            }
+        );
+
+        let Car { id, title:_, artist:_, year:_, price:_, img_url:_, description:_, for_sale:_} = car;
+        object::delete(id);
+    }
+
+    public fun place_internal<T: key + store>(self: &mut CarCompany, item: T) {
+        self.counter = self.counter + 1;
+        dof::add(&mut self.id, Item { id: object::id(&item) }, item)
+    }
 }
