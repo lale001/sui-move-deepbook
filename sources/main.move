@@ -31,7 +31,7 @@ module car_booking::main {
         owner: address,
         balance: Balance<SUI>,
         counter: u64,
-        Cars: ObjectTable<u64, Car>,
+        cars: ObjectTable<u64, Car>, // changed to lowercase
     }
 
     struct CarCompanyCap has key, store {
@@ -60,7 +60,7 @@ module car_booking::main {
     }
 
     struct CarDeleted has copy, drop {
-        art_id: ID,
+        car_id: ID, // changed from art_id
         title: String,
         artist: address,
     }
@@ -74,7 +74,7 @@ module car_booking::main {
                 owner: sender(ctx),
                 balance: balance::zero(),
                 counter: 0,
-                Cars: object_table::new(ctx),
+                cars: object_table::new(ctx), // changed to lowercase
             }
         );
         CarCompanyCap {
@@ -82,7 +82,7 @@ module car_booking::main {
             for: inner_
         }
     }
-    
+
     // Function to create Car
     public fun mint(
         title: String,
@@ -97,10 +97,10 @@ module car_booking::main {
         event::emit(
             CarCreated {
                 id: object::uid_to_inner(&id),
-                title: title,
-                artist:tx_context::sender(ctx),
+                title: title.clone(),
+                artist: tx_context::sender(ctx),
                 year: year,
-                description: description,
+                description: description.clone(),
             }
         );
 
@@ -167,9 +167,9 @@ module car_booking::main {
 
         event::emit(
             CarUpdated {
-                title: car.title,
+                title: car.title.clone(),
                 year: car.year,
-                description: car.description,
+                description: car.description.clone(),
                 for_sale: car.for_sale,
                 price: car.price,
             }
@@ -183,13 +183,13 @@ module car_booking::main {
         coin::take(&mut self.balance, amount, ctx)
     }
     
-    // Function to get the artist of an Car
+    // Function to get the owner of a Car
     public fun get_owner(self: &CarCompany) : address {
         self.owner
     }
 
     // Function to fetch the Car Information
-    public fun get_car_info(self: &CarCompany,id:u64) : (
+    public fun get_car_info(self: &CarCompany, id: u64) : (
         String,
         address,
         u64,
@@ -198,38 +198,98 @@ module car_booking::main {
         String,
         bool
     ) {
-        let car = object_table::borrow(&self.Cars, id);
+        let car = object_table::borrow(&self.cars, id); // changed to lowercase
         (
-            car.title,
+            car.title.clone(),
             car.artist,
             car.year,
             car.price,
-            car.img_url,
-            car.description,
+            car.img_url.clone(),
+            car.description.clone(),
             car.for_sale,
         )
     }
 
-    // Function to delete an Car
-    public entry fun delete_Car(
+    // Function to delete a Car
+    public entry fun delete_car(
         car: Car,
         ctx: &mut TxContext,
     ) {
         assert!(tx_context::sender(ctx) == car.artist, ERROR_NOT_THE_OWNER);
         event::emit(
             CarDeleted {
-                art_id: object::uid_to_inner(&car.id),
-                title: car.title,
+                car_id: object::uid_to_inner(&car.id),
+                title: car.title.clone(),
                 artist: car.artist,
             }
         );
 
-        let Car { id, title:_, artist:_, year:_, price:_, img_url:_, description:_, for_sale:_} = car;
+        let Car { id, title: _, artist: _, year: _, price: _, img_url: _, description: _, for_sale: _ } = car;
         object::delete(id);
     }
 
     public fun place_internal<T: key + store>(self: &mut CarCompany, item: T) {
         self.counter = self.counter + 1;
         dof::add(&mut self.id, Item { id: object::id(&item) }, item)
+    }
+}
+
+// Tests
+module car_booking::tests {
+    use car_booking::main;
+    use std::string::String;
+    use sui::url::Url;
+    use sui::coin::Coin;
+    use sui::sui::SUI;
+    use sui::tx_context::TxContext;
+    use sui::test_scenario::TestScenario;
+    use sui::object::UID;
+
+    public fun run_tests() {
+        let ctx = &mut TestScenario::create().create_ctx();
+
+        // Test for creating a new CarCompany
+        let cap = main::new(ctx);
+        assert!(cap.for != object::ID::zero(), "CarCompanyCap creation failed");
+
+        // Test for minting a new Car
+        let img_url = vec![104, 116, 116, 112, 115, 58, 47, 47, 101, 120, 97, 109, 112, 108, 101, 46, 99, 111, 109];
+        let car = main::mint(
+            String::from("Test Car"),
+            img_url,
+            2023,
+            1000,
+            String::from("This is a test car."),
+            ctx
+        );
+        assert!(object::id(&car) != UID::zero(), "Car minting failed");
+
+        // Test for listing a Car
+        let car_company = main::CarCompany {
+            id: object::new(ctx),
+            owner: sui::tx_context::sender(ctx),
+            balance: sui::balance::zero(),
+            counter: 0,
+            cars: sui::object_table::new(ctx),
+        };
+        main::list(&mut car_company, &cap, car, 1000);
+
+        // Test for fetching Car information
+        let car_info = main::get_car_info(&car_company, 0);
+        assert!(car_info.0 == "Test Car", "Fetching car information failed");
+
+        // Test for purchasing a Car
+        let payment = Coin<SUI>::mint(1000, ctx);
+        let purchased_car = main::purchase(&mut car_company, object::id(&car), payment);
+        assert!(object::id(&purchased_car) == object::id(&car), "Car purchase failed");
+
+        // Test for updating a Car
+        let mut car_to_update = purchased_car;
+        main::update(&mut car_to_update, String::from("Updated Car"), 2024, String::from("Updated description"), false, 1500);
+        assert!(car_to_update.title == "Updated Car", "Car update failed");
+
+        // Test for deleting a Car
+        main::delete_car(car_to_update, ctx);
+        assert!(object::id(&car_to_update) == UID::zero(), "Car deletion failed");
     }
 }
