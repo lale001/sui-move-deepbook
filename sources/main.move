@@ -11,10 +11,8 @@ module car_booking::main {
     use sui::dynamic_object_field as dof;
     use sui::event;
     use sui::tx_context::{Self, TxContext, sender};
-
     const ERROR_NOT_THE_OWNER: u64 = 0;
     const ERROR_INSUFFICIENT_FUNDS: u64 = 1;
-
     struct Car has key, store {
         id: UID,
         title: String,
@@ -25,24 +23,19 @@ module car_booking::main {
         description: String,
         for_sale: bool,
     }
-
     struct CarCompany has key, store {
         id: UID,
         owner: address,
         balance: Balance<SUI>,
         counter: u64,
-        Cars: ObjectTable<u64, Car>,
+        cars: ObjectTable<u64, Car>,
     }
-
     struct CarCompanyCap has key, store {
         id: UID,
         for: ID
     }
-
     struct Listing has store, copy, drop { id: ID, is_exclusive: bool }
-
     struct Item has store, copy, drop { id: ID }
-
     struct CarCreated has copy, drop {
         id: ID,
         artist: address,
@@ -50,7 +43,6 @@ module car_booking::main {
         year: u64,
         description: String,
     }
-
     struct CarUpdated has copy, drop {
         title: String,
         year: u64,
@@ -58,13 +50,11 @@ module car_booking::main {
         for_sale: bool,
         price: u64,
     }
-
     struct CarDeleted has copy, drop {
         art_id: ID,
         title: String,
         artist: address,
     }
-
     public fun new(ctx: &mut TxContext) : CarCompanyCap {
         let id_ = object::new(ctx);
         let inner_ = object::uid_to_inner(&id_);
@@ -74,7 +64,7 @@ module car_booking::main {
                 owner: sender(ctx),
                 balance: balance::zero(),
                 counter: 0,
-                Cars: object_table::new(ctx),
+                cars: object_table::new(ctx),
             }
         );
         CarCompanyCap {
@@ -82,7 +72,6 @@ module car_booking::main {
             for: inner_
         }
     }
-    
     // Function to create Car
     public fun mint(
         title: String,
@@ -92,18 +81,16 @@ module car_booking::main {
         description: String,
         ctx: &mut TxContext,
     ) : Car {
-
         let id = object::new(ctx);
         event::emit(
             CarCreated {
                 id: object::uid_to_inner(&id),
                 title: title,
-                artist:tx_context::sender(ctx),
+                artist: tx_context::sender(ctx),
                 year: year,
                 description: description,
             }
         );
-
         Car {
             id: id,
             title: title,
@@ -115,7 +102,6 @@ module car_booking::main {
             price: price,
         }
     }
-
     // Function to add Car to CarCompany
     public entry fun list<T: key + store>(
         self: &mut CarCompany,
@@ -128,28 +114,24 @@ module car_booking::main {
         place_internal(self, item);
         df::add(&mut self.id, Listing { id, is_exclusive: false }, price);
     }
-
     public fun delist<T: key + store>(
         self: &mut CarCompany, cap: &CarCompanyCap, id: ID
     ) : T {
         assert!(object::id(self) == cap.for, ERROR_NOT_THE_OWNER);
         self.counter = self.counter - 1;
         df::remove_if_exists<Listing, u64>(&mut self.id, Listing { id, is_exclusive: false });
-        dof::remove(&mut self.id, Item { id })    
+        dof::remove(&mut self.id, Item { id })
     }
-
     public fun purchase<T: key + store>(
         self: &mut CarCompany, id: ID, payment: Coin<SUI>
     ): T {
         let price = df::remove<Listing, u64>(&mut self.id, Listing { id, is_exclusive: false });
         let inner = dof::remove<Item, T>(&mut self.id, Item { id });
-
         self.counter = self.counter - 1;
         assert!(price == coin::value(&payment), ERROR_INSUFFICIENT_FUNDS);
         coin::put(&mut self.balance, payment);
         inner
     }
-    
     // Function to Update Car Properties
     public entry fun update(
         car: &mut Car,
@@ -164,7 +146,6 @@ module car_booking::main {
         car.description = description;
         car.for_sale = for_sale;
         car.price = price;
-
         event::emit(
             CarUpdated {
                 title: car.title,
@@ -175,21 +156,18 @@ module car_booking::main {
             }
         );
     }
-
     public fun withdraw(
         self: &mut CarCompany, cap: &CarCompanyCap, amount: u64, ctx: &mut TxContext
     ): Coin<SUI> {
         assert!(object::id(self) == cap.for, ERROR_NOT_THE_OWNER);
         coin::take(&mut self.balance, amount, ctx)
     }
-    
-    // Function to get the artist of an Car
+    // Function to get the artist of a Car
     public fun get_owner(self: &CarCompany) : address {
         self.owner
     }
-
     // Function to fetch the Car Information
-    public fun get_car_info(self: &CarCompany,id:u64) : (
+    public fun get_car_info(self: &CarCompany, id: u64) : (
         String,
         address,
         u64,
@@ -198,7 +176,7 @@ module car_booking::main {
         String,
         bool
     ) {
-        let car = object_table::borrow(&self.Cars, id);
+        let car = object_table::borrow(&self.cars, id);
         (
             car.title,
             car.artist,
@@ -209,9 +187,8 @@ module car_booking::main {
             car.for_sale,
         )
     }
-
-    // Function to delete an Car
-    public entry fun delete_Car(
+    // Function to delete a Car
+    public entry fun delete_car(
         car: Car,
         ctx: &mut TxContext,
     ) {
@@ -223,11 +200,9 @@ module car_booking::main {
                 artist: car.artist,
             }
         );
-
-        let Car { id, title:_, artist:_, year:_, price:_, img_url:_, description:_, for_sale:_} = car;
+        let Car { id, title:_, artist:_, year:_, price:_, img_url:_, description:_, for_sale:_ } = car;
         object::delete(id);
     }
-
     public fun place_internal<T: key + store>(self: &mut CarCompany, item: T) {
         self.counter = self.counter + 1;
         dof::add(&mut self.id, Item { id: object::id(&item) }, item)
